@@ -194,6 +194,36 @@ func(cfg *apiConfig) handleGetPosts(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, returnPosts)
 }
 
+func(cfg *apiConfig) handleGetSinglePost(w http.ResponseWriter, r *http.Request) {
+	var postID string = r.PathValue("chirpID")
+	if postID == "" {
+		respondWithError(w, http.StatusInternalServerError, "ERROR  missing the post ID", nil)
+		return
+	}
+
+	newUUID, err := uuid.Parse(postID)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "ERROR  couldn't parse string", err)
+		return
+	}
+
+	post, err := cfg.dbQueries.GetPost(r.Context(), newUUID)
+
+	if err != nil {
+		respondWithError(w, 404, "ERROR  couldn't find the post", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, Post{
+		ID: post.ID,
+		CreatedAt: post.CreatedAt,
+		UpdatedAt: post.UpdatedAt,
+		Body: post.Body,
+		UserID: post.UserID,
+	})
+}
+
 func main() {
 	//Load and get enviorment variable DB_URL
 	godotenv.Load()
@@ -220,6 +250,7 @@ func main() {
 
 
 	})
+
 	mux.Handle("/app/", cfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
 	
 	mux.HandleFunc("GET /admin/metrics", cfg.getRequests)
@@ -229,6 +260,8 @@ func main() {
 	mux.HandleFunc("POST /api/users",  cfg.handlerUsers)
 
 	mux.HandleFunc("POST /api/chirps", cfg.handleMessage)
+
+	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handleGetSinglePost)
 
 	mux.HandleFunc("GET /api/chirps", cfg.handleGetPosts)
 
