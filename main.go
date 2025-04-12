@@ -9,6 +9,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/joho/godotenv"
 	"github.com/FallenL3vi/WebServer/internal/database"
+	"github.com/FallenL3vi/WebServer/internal/auth"
 	"database/sql"
 	"os"
 	"github.com/google/uuid"
@@ -70,7 +71,7 @@ func (cfg *apiConfig) restMiddlewareMetrics(w http.ResponseWriter, r *http.Reque
 func cleanBadWord(text string) string {
 
 	if len(text) == 0{
-		fmt.Println("Empty text or word to clean\n")
+		fmt.Println("Empty text or word to clean")
 		return ""
 	}
 
@@ -97,6 +98,7 @@ func cleanBadWord(text string) string {
 func (cfg *apiConfig) handlerUsers(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Email string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -109,18 +111,26 @@ func (cfg *apiConfig) handlerUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := cfg.dbQueries.CreateUser(r.Context(), params.Email)
+	hash, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error", err)
+		return	
+	}
+
+	user, err := cfg.dbQueries.CreateUser(r.Context(), database.CreateUserParams{Email: params.Email, HashedPassword: hash,})
 
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Error couldn't create an user", err)
 		return
 	}
 
+
 	var returnValue User = User{
 		ID: user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+
 	}
 
 	respondWithJSON(w, 201, returnValue)
@@ -224,6 +234,45 @@ func(cfg *apiConfig) handleGetSinglePost(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func(cfg *apiConfig) handleLoginUser(w http.ResponseWriter, r*http.Request) {
+	type parameters struct {
+		Password string `json:"password"`
+		Email string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error decoding parameters:", err)
+		return
+	}
+
+	user, err := cfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error couldn't get the user", err)
+		return
+	}
+
+	err = auth.CheckPasswordHash(user.HashedPassword, params.Password)
+
+	if err != nil {
+		respondWithError(w, 401, "ERROR UNAUTHORIZED ACCESS", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, User{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+
+	})
+
+}
+ 
 func main() {
 	//Load and get enviorment variable DB_URL
 	godotenv.Load()
@@ -264,6 +313,8 @@ func main() {
 	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handleGetSinglePost)
 
 	mux.HandleFunc("GET /api/chirps", cfg.handleGetPosts)
+
+	mux.HandleFunc("POST /api/login", cfg.handleLoginUser)
 
 	server.Handler = mux
 
