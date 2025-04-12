@@ -2,7 +2,18 @@ package auth
 
 import (
 	"golang.org/x/crypto/bcrypt"
+	"github.com/google/uuid"
+	"time"
+	"errors"
 	"fmt"
+	"strings"
+	"github.com/golang-jwt/jwt/v5"
+	"net/http"
+)
+
+type TokenType string
+const (
+	TokenTypeAccess TokenType = "chirpy-access"
 )
 
 func HashPassword(password string) (string, error) {
@@ -16,10 +27,70 @@ func HashPassword(password string) (string, error) {
 }
 
 func CheckPasswordHash(hash, password string) error {
-	fmt.Printf(hash)
-	fmt.Printf("\n")
-	fmt.Printf(password)
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 
 	return err
+}
+
+func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+		ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(expiresIn)),
+		IssuedAt: jwt.NewNumericDate(time.Now().UTC()),
+		Issuer: string(TokenTypeAccess),
+		Subject: userID.String(),
+	})
+
+	return token.SignedString([]byte(tokenSecret))
+}
+
+func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
+	claims := jwt.RegisteredClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, &claims, func(token *jwt.Token) (interface{}, error) {
+		return []byte(tokenSecret), nil
+	},)
+
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	userClaimsID, err := token.Claims.GetSubject()
+
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	issuer, err := token.Claims.GetIssuer()
+
+	if err != nil {
+		return uuid.Nil ,err
+	}
+
+	if issuer != string(TokenTypeAccess) {
+		return uuid.Nil, errors.New("invalid issuer")
+	}
+
+	id, err := uuid.Parse(userClaimsID)
+
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	return id, nil
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+	header := headers.Get("Authorization")
+
+	if header == "" {
+		return "", errors.New("Missing header")
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(header,"Bearer"))
+
+	if token == "" {
+		return "", errors.New("Missing token")
+	}
+
+	fmt.Println(token)
+	return token, nil
+
 }

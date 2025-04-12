@@ -20,6 +20,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries *database.Queries
 	platform string
+	secretJWT string
 }
 
 type User struct {
@@ -27,6 +28,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email string `json:"email"`
+	Token string `json:"token"`
 }
 
 type Post struct {
@@ -141,7 +143,6 @@ func(cfg *apiConfig) handleMessage(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		// the struct fields must be exported (start with a capital letter) if you want them parsed
 		Body string `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -158,11 +159,27 @@ func(cfg *apiConfig) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
+
+	token, err := auth.GetBearerToken(r.Header)
+
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "ERROR couldn't get token from header", err)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.secretJWT)
+
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "ERROR WRONG JWT ACCESS DENIED", err)
+		return
+	}
+
+	//ADD VERIFICATION ON DATABASE TO CEHCK IF USER STILL EXISTS
 	var cleanText string = cleanBadWord(params.Body)
 
 	post, err := cfg.dbQueries.CreatePost(r.Context(), database.CreatePostParams{
 		Body: cleanText,
-		UserID: params.UserID,
+		UserID: userID,
 	})
 
 	if err != nil {
@@ -238,6 +255,7 @@ func(cfg *apiConfig) handleLoginUser(w http.ResponseWriter, r*http.Request) {
 	type parameters struct {
 		Password string `json:"password"`
 		Email string `json:"email"`
+		ExpiresInSeconds *int `json:"expires_in_seconds"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -247,6 +265,13 @@ func(cfg *apiConfig) handleLoginUser(w http.ResponseWriter, r*http.Request) {
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Error decoding parameters:", err)
 		return
+	}
+
+	var expiresInSeconds int = 0
+	if params.ExpiresInSeconds == nil || *params.ExpiresInSeconds > 3600 {
+		expiresInSeconds = 3600
+	} else {
+		expiresInSeconds = *params.ExpiresInSeconds
 	}
 
 	user, err := cfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
@@ -263,11 +288,20 @@ func(cfg *apiConfig) handleLoginUser(w http.ResponseWriter, r*http.Request) {
 		return
 	}
 
+	token, err := auth.MakeJWT(user.ID, cfg.secretJWT, time.Duration(expiresInSeconds)*time.Second)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "ERROR couldn't make JWT", err)
+		return
+	}
+
+	fmt.Println(token)
 	respondWithJSON(w, http.StatusOK, User{
 		ID: user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		Token: token,
 
 	})
 
@@ -287,6 +321,7 @@ func main() {
 		fileserverHits: atomic.Int32{},
 		dbQueries: database.New(db),
 		platform: platform,
+		secretJWT: os.Getenv("SECRET_JWT"),
 	}
 
 	mux := http.NewServeMux()
