@@ -19,3 +19,7 @@ ORDER BY created_at ASC;
 -- name: GetPost :one
 SELECT * FROM posts
 WHERE $1 = id;
+
+-- name: DeletePost :execresult
+DELETE FROM posts
+WHERE $1 = id AND user_id = $2;

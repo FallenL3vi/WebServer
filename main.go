@@ -364,6 +364,124 @@ func(cfg *apiConfig) handleRefreshRevoke(w http.ResponseWriter, r *http.Request)
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func(cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	accessToken, err := auth.GetBearerToken(r.Header)
+
+	userID, err := auth.ValidateJWT(accessToken, cfg.secretJWT)
+
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "ERROR WRONG JWT ACCESS DENIED", err)
+		return
+	}
+
+
+	type parameters struct {
+		Password string `json:"password"`
+		Email string `json:"email"`
+	}
+
+	type returnParams struct {
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err = decoder.Decode(&params)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error decoding parameters:", err)
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(params.Password)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error couldn't hash the password", err)
+		return
+	}
+
+	user, err := cfg.dbQueries.UpdateUserPasswordAndEmail(r.Context(), database.UpdateUserPasswordAndEmailParams{
+		HashedPassword: hashedPassword,
+		Email: params.Email,
+		ID: userID,
+	})
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error couldn't update the user", err)
+		return
+	}
+	
+	respondWithJSON(w, http.StatusOK, returnParams{
+		ID: userID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	})
+}
+
+func(cfg *apiConfig) handleDeletePost(w http.ResponseWriter, r *http.Request) {
+	accessToken, err := auth.GetBearerToken(r.Header)
+
+	userID, err := auth.ValidateJWT(accessToken, cfg.secretJWT)
+
+	if err != nil {
+		respondWithError(w, 401, "ERROR WRONG JWT ACCESS DENIED", err)
+		return
+	}
+
+	var postID string = r.PathValue("chirpID")
+
+	if postID == "" {
+		respondWithError(w, http.StatusInternalServerError, "ERROR  missing the post ID", nil)
+		return
+	}
+
+	PostUUID, err := uuid.Parse(postID)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "ERROR  couldn't parse string", err)
+		return
+	}
+
+	post, err := cfg.dbQueries.GetPost(r.Context(), PostUUID)
+
+	if err != nil {
+		respondWithError(w, 404, "ERRPR COULDN'T FIND THE POST", err)
+	}
+
+	if post.UserID != userID {
+		respondWithError(w, 403, "ERROR UNAUTHORIZED ACCESS", nil)
+	}
+
+	
+	results, err := cfg.dbQueries.DeletePost(r.Context(), database.DeletePostParams {
+		ID: PostUUID,
+		UserID: userID,
+	})
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "ERROR  couldn't delete the post", err)
+		return
+	}
+
+	rowsAffected, err := results.RowsAffected()
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "ERROR  checking affected rows", err)
+		return
+	}
+
+	if rowsAffected == 0 {
+		respondWithError(w, 404, "ERROR  POST WAS NOT FOUND OR UNAUTHORIZED", err)
+		return
+	}
+	
+	w.WriteHeader(204)
+}
  
 func main() {
 	//Load and get enviorment variable DB_URL
@@ -412,6 +530,10 @@ func main() {
 	mux.HandleFunc("POST /api/refresh", cfg.handleRefreshToken)
 
 	mux.HandleFunc("POST /api/revoke", cfg.handleRefreshRevoke)
+
+	mux.HandleFunc("PUT /api/users", cfg.handleUpdateUser)
+
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.handleDeletePost)
 
 	server.Handler = mux
 

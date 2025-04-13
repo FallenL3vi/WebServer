@@ -7,6 +7,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/google/uuid"
 )
@@ -39,6 +40,20 @@ func (q *Queries) CreatePost(ctx context.Context, arg CreatePostParams) (Post, e
 		&i.UserID,
 	)
 	return i, err
+}
+
+const deletePost = `-- name: DeletePost :execresult
+DELETE FROM posts
+WHERE $1 = id AND user_id = $2
+`
+
+type DeletePostParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) DeletePost(ctx context.Context, arg DeletePostParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, deletePost, arg.ID, arg.UserID)
 }
 
 const deletePosts = `-- name: DeletePosts :exec
