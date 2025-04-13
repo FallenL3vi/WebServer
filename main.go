@@ -29,6 +29,7 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Email string `json:"email"`
 	Token string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 type Post struct {
@@ -251,11 +252,10 @@ func(cfg *apiConfig) handleGetSinglePost(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-func(cfg *apiConfig) handleLoginUser(w http.ResponseWriter, r*http.Request) {
+func(cfg *apiConfig) handleLoginUser(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Password string `json:"password"`
 		Email string `json:"email"`
-		ExpiresInSeconds *int `json:"expires_in_seconds"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -267,12 +267,7 @@ func(cfg *apiConfig) handleLoginUser(w http.ResponseWriter, r*http.Request) {
 		return
 	}
 
-	var expiresInSeconds int = 0
-	if params.ExpiresInSeconds == nil || *params.ExpiresInSeconds > 3600 {
-		expiresInSeconds = 3600
-	} else {
-		expiresInSeconds = *params.ExpiresInSeconds
-	}
+	var expiresInSeconds int = 3600 //1h
 
 	user, err := cfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
 
@@ -295,16 +290,79 @@ func(cfg *apiConfig) handleLoginUser(w http.ResponseWriter, r*http.Request) {
 		return
 	}
 
-	fmt.Println(token)
+
+	refreshToken, err := auth.MakeRefreshToken()
+
+	_, err = cfg.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+		Token: refreshToken,
+		ExpiresAt: time.Now().UTC().Add(60*24*time.Hour),
+		UserID: user.ID,
+	})
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "ERROR couldn't save Refresh Token", err)
+		return
+	}
+
 	respondWithJSON(w, http.StatusOK, User{
 		ID: user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
 		Token: token,
+		RefreshToken: refreshToken,
 
 	})
 
+}
+
+func(cfg *apiConfig) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
+	type responseParams struct {
+		Token string `json:"token"`
+	}
+
+	tokenHeader, err := auth.GetBearerToken(r.Header)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "ERROR couldn't get Refresh Token", err)
+		return
+	}
+
+	tokenRefresh, err := cfg.dbQueries.GetRefreshToken(r.Context(), tokenHeader)
+
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "ERROR WRONG REFRESH TOKEN ACCESS DENIED", err)
+		return
+	}
+
+	token, err := auth.MakeJWT(tokenRefresh.UserID, cfg.secretJWT, time.Hour,)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "ERROR couldn't make JWT", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, responseParams{
+		Token: token,
+	})
+
+}
+
+func(cfg *apiConfig) handleRefreshRevoke(w http.ResponseWriter, r *http.Request) {
+	tokenHeader, err := auth.GetBearerToken(r.Header)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "ERROR couldn't get Refresh Token", err)
+		return
+	}
+
+	err = cfg.dbQueries.SetRevokeAt(r.Context(), tokenHeader)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "ERROR COULDN'T REVOKE SESSION", err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
  
 func main() {
@@ -350,6 +408,10 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", cfg.handleGetPosts)
 
 	mux.HandleFunc("POST /api/login", cfg.handleLoginUser)
+
+	mux.HandleFunc("POST /api/refresh", cfg.handleRefreshToken)
+
+	mux.HandleFunc("POST /api/revoke", cfg.handleRefreshRevoke)
 
 	server.Handler = mux
 

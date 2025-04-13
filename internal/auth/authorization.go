@@ -9,6 +9,8 @@ import (
 	"strings"
 	"github.com/golang-jwt/jwt/v5"
 	"net/http"
+	"crypto/rand"
+	"encoding/hex"
 )
 
 type TokenType string
@@ -93,4 +95,14 @@ func GetBearerToken(headers http.Header) (string, error) {
 	fmt.Println(token)
 	return token, nil
 
+}
+
+func MakeRefreshToken() (string, error) {
+
+	key := make([]byte, 32)
+	rand.Read(key)
+
+	encodedStr := hex.EncodeToString(key)
+
+	return encodedStr, nil
 }
