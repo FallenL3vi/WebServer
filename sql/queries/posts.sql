@@ -16,6 +16,11 @@ DELETE FROM posts;
 SELECT * FROM posts
 ORDER BY created_at ASC;
 
+-- name: GetUserPosts :many
+SELECT * FROM posts
+WHERE user_id = $1
+ORDER BY created_at ASC;
+
 -- name: GetPost :one
 SELECT * FROM posts
 WHERE $1 = id;

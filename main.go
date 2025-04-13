@@ -14,6 +14,7 @@ import (
 	"os"
 	"github.com/google/uuid"
 	"time"
+	"sort"
 )
 
 type apiConfig struct {
@@ -21,6 +22,7 @@ type apiConfig struct {
 	dbQueries *database.Queries
 	platform string
 	secretJWT string
+	polkaKey string
 }
 
 type User struct {
@@ -30,6 +32,7 @@ type User struct {
 	Email string `json:"email"`
 	Token string `json:"token"`
 	RefreshToken string `json:"refresh_token"`
+	IsChirpyRed bool `json:"is_chirpy_red"`
 }
 
 type Post struct {
@@ -133,6 +136,7 @@ func (cfg *apiConfig) handlerUsers(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 
 	}
 
@@ -200,14 +204,43 @@ func(cfg *apiConfig) handleMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func(cfg *apiConfig) handleGetPosts(w http.ResponseWriter, r *http.Request) {
-	posts, err := cfg.dbQueries.GetPosts(r.Context())
+	author_id := r.URL.Query().Get("author_id")
+	sortOrder := r.URL.Query().Get("sort")
 
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "ERROR Couldn't get posts", err)
-		return
+	var err error
+
+	posts := []database.Post{}
+
+
+	if author_id != "" {
+		authorUUID, err := uuid.Parse(author_id)
+
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "ERROR  couldn't parse string", err)
+		}
+
+		posts, err = cfg.dbQueries.GetUserPosts(r.Context(), authorUUID)
+
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "ERROR Couldn't get posts", err)
+			return
+		}
+	} else {
+		posts, err = cfg.dbQueries.GetPosts(r.Context())
+
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "ERROR Couldn't get posts", err)
+			return
+		}
 	}
 
 	returnPosts := []Post{}
+
+	if sortOrder == "desc" {
+		sort.Slice(posts, func(i, j int) bool {
+			return posts[i].CreatedAt.After(posts[j].CreatedAt)
+		})
+	}
 
 	for _, post := range posts {
 		returnPosts = append(returnPosts, Post{
@@ -311,6 +344,7 @@ func(cfg *apiConfig) handleLoginUser(w http.ResponseWriter, r *http.Request) {
 		Email: user.Email,
 		Token: token,
 		RefreshToken: refreshToken,
+		IsChirpyRed: user.IsChirpyRed,
 
 	})
 
@@ -386,6 +420,7 @@ func(cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email string `json:"email"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -420,6 +455,7 @@ func(cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	})
 }
 
@@ -482,6 +518,65 @@ func(cfg *apiConfig) handleDeletePost(w http.ResponseWriter, r *http.Request) {
 	
 	w.WriteHeader(204)
 }
+
+func(cfg *apiConfig) handleUpgradeUser(w http.ResponseWriter, r *http.Request) {
+	polkaKey, err := auth.GetAPIKey(r.Header)
+
+	if err != nil {
+		respondWithError(w, 401, "ERROR Couldn't exxtract API KEY", err)
+		return
+	}
+
+	if polkaKey  != cfg.polkaKey {
+		respondWithError(w, 401, "ERROR AUTHENTICATION FAILED", err)
+		return
+	}
+
+	type parameters struct {
+		Event string `json:"event"`
+		Data struct {
+			UserID uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err = decoder.Decode(&params)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error decoding parameters:", err)
+		return
+	}
+
+	if params.Event != "user.upgraded" {
+		w.WriteHeader(204)
+		return
+	}
+
+	resultSQL, err := cfg.dbQueries.UpgradeUser(r.Context(), database.UpgradeUserParams{
+		IsChirpyRed: true,
+		ID: params.Data.UserID,
+	})
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error Couldn't upgrade the user", err)
+		return
+	}
+
+	rowsAffected, err := resultSQL.RowsAffected()
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "ERROR  checking affected rows", err)
+		return
+	}
+
+	if rowsAffected == 0 {
+		respondWithError(w, 404, "ERROR  USER WAS NOT FOUND OR UNAUTHORIZED", err)
+		return
+	}
+	
+	w.WriteHeader(204)
+}
  
 func main() {
 	//Load and get enviorment variable DB_URL
@@ -498,6 +593,7 @@ func main() {
 		dbQueries: database.New(db),
 		platform: platform,
 		secretJWT: os.Getenv("SECRET_JWT"),
+		polkaKey: os.Getenv("POLKA_KEY"),
 	}
 
 	mux := http.NewServeMux()
@@ -534,6 +630,8 @@ func main() {
 	mux.HandleFunc("PUT /api/users", cfg.handleUpdateUser)
 
 	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.handleDeletePost)
+
+	mux.HandleFunc("POST /api/polka/webhooks", cfg.handleUpgradeUser)
 
 	server.Handler = mux
 
